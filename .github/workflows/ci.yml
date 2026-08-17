@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A new push to the same branch makes the in-flight run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The notebook calls plt.show(); without a headless backend that warns and can
+  # hang on a runner with no display.
+  MPLBACKEND: Agg
+  FORCE_COLOR: "1"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Ruff lint
+        run: uv run ruff check --output-format=github .
+
+      # Notebooks are excluded from the format gate on purpose: reformatting
+      # rewrites cell sources and produces noisy, hard-to-review diffs.
+      - name: Ruff format check
+        run: uv run ruff format --check --exclude '*.ipynb' .
+
+  notebook:
+    name: Execute notebook
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # Catches a pyproject.toml edit that was never followed by `uv lock`.
+      - name: Check lockfile is up to date
+        run: uv lock --check
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Execute notebook and check metrics
+        run: uv run python scripts/check_notebook.py
+
+      - name: Upload executed notebook
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: executed-notebook
+          path: build/energy_forecast.executed.ipynb
+          if-no-files-found: warn
+          retention-days: 14
